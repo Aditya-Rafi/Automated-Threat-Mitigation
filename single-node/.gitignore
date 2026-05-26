@@ -1,0 +1,4 @@
+.env
+config/wazuh_dashboard/wazuh.local.yml
+config/wazuh_indexer_ssl_certs/
+config/wazuh_cluster/*.bak

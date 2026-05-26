@@ -1,0 +1,151 @@
+<group name="local,office-security,">
+
+  <!-- Suricata/IDS: cryptocurrency miner activity (Python-classified JSON) -->
+  <rule id="100100" level="12">
+    <if_sid>86601</if_sid>
+    <field name="event_type">alert</field>
+    <field name="threat_type">cryptomining</field>
+    <description>Suricata: Terdeteksi Aktivitas Cryptomining Klasifikasi Python</description>
+    <mitre>
+      <id>T1496</id>
+    </mitre>
+    <group>ids,suricata,cryptominer,attack,active_response,</group>
+  </rule>
+
+  <rule id="100101" level="14" frequency="2" timeframe="300">
+    <if_matched_sid>100100</if_matched_sid>
+    <same_source_ip />
+    <description>Repeated cryptocurrency miner activity from same source IP</description>
+    <mitre>
+      <id>T1496</id>
+    </mitre>
+    <group>ids,suricata,cryptominer,active_response,</group>
+  </rule>
+
+  <!-- Noise suppression for low-value Suricata informational events -->
+  <rule id="100090" level="0">
+    <field name="alert_signature_id">2027397</field>
+    <description>Suppressed low-value Suricata informational event (Spotify P2P)</description>
+    <options>no_log</options>
+    <group>suricata,noise_suppressed,</group>
+  </rule>
+
+  <rule id="100091" level="0">
+    <field name="alert_signature_id">2210044</field>
+    <description>Suppressed low-value Suricata stream timestamp anomaly</description>
+    <options>no_log</options>
+    <group>suricata,noise_suppressed,</group>
+  </rule>
+
+  <rule id="100099" level="0">
+    <field name="alert_category">Not Suspicious Traffic</field>
+    <field name="zone">office</field>
+    <description>Suppressed office informational traffic noise</description>
+    <options>no_log</options>
+    <group>suricata,noise_suppressed,office,</group>
+  </rule>
+
+  <!-- Zone and threat grouping -->
+  <rule id="100092" level="7">
+    <field name="zone">cloud</field>
+    <description>Cloud zone network alert</description>
+    <group>zone_cloud,threat_grouping,suricata,</group>
+  </rule>
+
+  <rule id="100093" level="6">
+    <field name="zone">office</field>
+    <description>Office zone network alert</description>
+    <group>zone_office,threat_grouping,suricata,</group>
+  </rule>
+
+  <rule id="100094" level="8">
+    <field name="zone">program-ph</field>
+    <description>Program PH zone security alert</description>
+    <group>zone_program_ph,threat_grouping,suricata,</group>
+  </rule>
+
+  <rule id="100095" level="8">
+    <field name="zone">program-mitra</field>
+    <description>Program Mitra zone security alert</description>
+    <group>zone_program_mitra,threat_grouping,suricata,</group>
+  </rule>
+
+  <rule id="100096" level="10">
+    <field name="threat_type">web-application</field>
+    <description>Web-application threat detected</description>
+    <group>threat_webapp,suricata,</group>
+  </rule>
+
+  <rule id="100097" level="10">
+    <field name="threat_type">identity-access</field>
+    <description>Identity and access threat detected</description>
+    <group>threat_identity,suricata,</group>
+  </rule>
+
+  <rule id="100098" level="11">
+    <field name="threat_type">malware-c2</field>
+    <description>Malware/C2 threat detected</description>
+    <group>threat_malware,suricata,active_response,</group>
+  </rule>
+
+  <!-- High-confidence auto response scope -->
+  <rule id="100130" level="13">
+    <field name="zone">cloud</field>
+    <field name="severity_bucket">critical</field>
+    <description>Critical cloud threat - auto response candidate</description>
+    <group>active_response,zone_cloud,critical,</group>
+  </rule>
+
+  <rule id="100131" level="12">
+    <field name="zone">cloud</field>
+    <field name="threat_type">malware-c2</field>
+    <description>Cloud malware/C2 threat - auto response candidate</description>
+    <group>active_response,zone_cloud,threat_malware,</group>
+  </rule>
+
+  <rule id="100132" level="12">
+    <field name="zone">program-ph</field>
+    <field name="threat_type">web-application</field>
+    <description>Program PH web application threat</description>
+    <group>zone_program_ph,threat_webapp,</group>
+  </rule>
+
+  <rule id="100133" level="12">
+    <field name="zone">program-mitra</field>
+    <field name="threat_type">web-application</field>
+    <description>Program Mitra web application threat</description>
+    <group>zone_program_mitra,threat_webapp,</group>
+  </rule>
+
+  <!-- Wazuh Vulnerability Detection: Next.js / NestJS packages -->
+  <rule id="100110" level="12">
+    <if_group>vulnerability-detector</if_group>
+    <match type="pcre2">(?i)(next|next\.js|nestjs|@nestjs/|nodejs|node\.js)</match>
+    <description>Vulnerable Next.js/NestJS/Node.js related package detected - update required</description>
+    <group>vulnerability,application,nextjs,nestjs,nodejs,patch_required,</group>
+  </rule>
+
+  <rule id="100111" level="14">
+    <if_group>vulnerability-detector</if_group>
+    <match type="pcre2">(?i)(next|next\.js|nestjs|@nestjs/|nodejs|node\.js)</match>
+    <match type="pcre2">(?i)(critical|high|remote code execution|rce|auth bypass|authorization bypass|middleware bypass|path traversal|prototype pollution|denial of service)</match>
+    <description>High-risk vulnerable Next.js/NestJS/Node.js component detected - urgent update required</description>
+    <group>vulnerability,application,nextjs,nestjs,nodejs,critical,patch_required,</group>
+  </rule>
+
+  <!-- FIM: package manifest changes on servers running JS apps -->
+  <rule id="100120" level="8">
+    <if_group>syscheck</if_group>
+    <match type="pcre2">(?i)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)</match>
+    <description>JavaScript dependency manifest changed - verify Next.js/NestJS dependency updates</description>
+    <group>syscheck,fim,nextjs,nestjs,nodejs,dependency_change,</group>
+  </rule>
+
+  <rule id="100121" level="10">
+    <if_sid>100120</if_sid>
+    <match type="pcre2">(?i)(next|@nestjs/|nestjs)</match>
+    <description>Next.js/NestJS dependency manifest changed</description>
+    <group>syscheck,fim,nextjs,nestjs,nodejs,dependency_change,</group>
+  </rule>
+
+</group>

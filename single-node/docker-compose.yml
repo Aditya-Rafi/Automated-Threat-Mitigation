@@ -4,6 +4,10 @@ services:
     image: wazuh/wazuh-manager:4.14.5
     hostname: wazuh.manager
     restart: always
+    depends_on:
+      - wazuh.indexer
+    cap_add:
+      - NET_ADMIN
     ulimits:
       memlock:
         soft: -1
@@ -17,15 +21,15 @@ services:
       - "514:514/udp"
       - "55000:55000"
     environment:
-      - INDEXER_URL="https://wazuh.indexer:9200"
-      - INDEXER_USERNAME=admin
-      - INDEXER_PASSWORD=SecretPassword
+      - INDEXER_URL=${INDEXER_URL:-https://wazuh.indexer:9200}
+      - INDEXER_USERNAME=${INDEXER_USERNAME:-admin}
+      - INDEXER_PASSWORD=${INDEXER_PASSWORD}
       - FILEBEAT_SSL_VERIFICATION_MODE=full
       - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
       - SSL_CERTIFICATE=/etc/ssl/filebeat.pem
       - SSL_KEY=/etc/ssl/filebeat.key
-      - API_USERNAME=wazuh-wui
-      - API_PASSWORD=MyS3cr37P450r.*-
+      - API_USERNAME=${API_USERNAME:-wazuh-wui}
+      - API_PASSWORD=${API_PASSWORD}
     volumes:
       - wazuh_api_configuration:/var/ossec/api/configuration
       - wazuh_etc:/var/ossec/etc
@@ -38,10 +42,143 @@ services:
       - wazuh_wodles:/var/ossec/wodles
       - filebeat_etc:/etc/filebeat
       - filebeat_var:/var/lib/filebeat
+      - suricata_logs:/var/log/suricata:ro
       - ./config/wazuh_indexer_ssl_certs/root-ca-manager.pem:/etc/ssl/root-ca.pem
       - ./config/wazuh_indexer_ssl_certs/wazuh.manager.pem:/etc/ssl/filebeat.pem
       - ./config/wazuh_indexer_ssl_certs/wazuh.manager-key.pem:/etc/ssl/filebeat.key
       - ./config/wazuh_cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf
+      - ./config/wazuh_cluster/local_internal_options.conf:/wazuh-config-mount/etc/local_internal_options.conf
+      - ./config/wazuh_cluster/local_decoder.xml:/var/ossec/etc/decoders/local_decoder.xml
+      - ./config/wazuh_cluster/local_rules.xml:/var/ossec/etc/rules/local_rules.xml
+      - ./config/wazuh_cluster/firewall-drop-custom:/var/ossec/active-response/bin/firewall-drop-custom
+
+  suricata:
+    image: jasonish/suricata:7.0
+    hostname: suricata
+    restart: always
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_NICE
+    command:
+      - -i
+      - ${SURICATA_INTERFACE:-enp1s0}
+      - -c
+      - /etc/suricata/suricata.yaml
+      - -l
+      - /var/log/suricata
+    volumes:
+      - ./config/wazuh_cluster/suricata.yaml:/etc/suricata/suricata.yaml
+      - suricata_logs:/var/log/suricata
+
+  suricata.eve.filter:
+    image: python:3-alpine
+    hostname: suricata.eve.filter
+    restart: always
+    command:
+      - python
+      - -u
+      - -c
+      - |
+        import json, os, time
+        src = "/var/log/suricata/eve.json"
+        dst = "/var/log/suricata/eve-alert.json"
+        open(dst, "w").close()
+        office_net = "192.168."
+        cloud_ports = {22, 80, 443, 1514, 1515, 55000, 9200}
+        processed = 0
+
+        print("suricata.eve.filter: started", flush=True)
+
+        def classify(event):
+            alert = event.get("alert", {})
+            dst_ip = event.get("dest_ip") or ""
+            sig = (alert.get("signature") or "").lower()
+            severity = int(alert.get("severity") or 3)
+            zone = "office"
+            if dst_ip.startswith(office_net) and event.get("dest_port") in cloud_ports:
+                zone = "cloud"
+            elif "ph" in sig or "law" in sig:
+                zone = "program-ph"
+            elif "mitra" in sig or "farm" in sig or "distributor" in sig:
+                zone = "program-mitra"
+            threat_type = "network"
+            if any(x in sig for x in ["xss", "sql", "rce", "webshell", "upload", "traversal", "deserialization"]):
+                threat_type = "web-application"
+            elif any(x in sig for x in ["brute", "password", "login", "credential", "auth"]):
+                threat_type = "identity-access"
+            elif any(x in sig for x in ["phish", "smtp", "mail", "spoof"]):
+                threat_type = "email-phishing"
+            elif any(x in sig for x in ["miner", "xmrig", "monero", "bitcoin", "stratum"]):
+                threat_type = "cryptomining"
+            elif any(x in sig for x in ["c2", "cnc", "trojan", "botnet", "malware", "backdoor"]):
+                threat_type = "malware-c2"
+            severity_bucket = "low"
+            if severity <= 1:
+                severity_bucket = "critical"
+            elif severity == 2:
+                severity_bucket = "high"
+            elif severity == 3:
+                severity_bucket = "medium"
+            return {
+                "timestamp": event.get("timestamp"),
+                "event_type": event.get("event_type"),
+                "in_iface": event.get("in_iface"),
+                "src_ip": event.get("src_ip"),
+                "srcip": event.get("src_ip"),
+                "src_port": event.get("src_port"),
+                "dest_ip": event.get("dest_ip"),
+                "dstip": event.get("dest_ip"),
+                "dest_port": event.get("dest_port"),
+                "proto": event.get("proto"),
+                "app_proto": event.get("app_proto"),
+                "alert_signature_id": alert.get("signature_id"),
+                "alert_signature": alert.get("signature"),
+                "alert_category": alert.get("category"),
+                "alert_severity": alert.get("severity"),
+                "alert_action": alert.get("action"),
+                "zone": zone,
+                "threat_type": threat_type,
+                "severity_bucket": severity_bucket,
+            }
+
+        while True:
+            while not os.path.exists(src):
+                print("suricata.eve.filter: waiting for /var/log/suricata/eve.json", flush=True)
+                time.sleep(1)
+            try:
+                with open(src, "r") as fin, open(dst, "a", buffering=1) as fout:
+                    fin.seek(0, 0)
+                    current_inode = os.fstat(fin.fileno()).st_ino
+                    print(f"suricata.eve.filter: tailing inode={current_inode}", flush=True)
+                    while True:
+                        line = fin.readline()
+                        if line:
+                            try:
+                                event = json.loads(line)
+                            except Exception:
+                                continue
+                            if event.get("event_type") != "alert":
+                                continue
+                            fout.write(json.dumps(classify(event), separators=(",", ":")) + "\n")
+                            processed += 1
+                            if processed % 25 == 0:
+                                print(f"suricata.eve.filter: processed_alerts={processed}", flush=True)
+                            continue
+                        try:
+                            inode_now = os.stat(src).st_ino
+                        except FileNotFoundError:
+                            print("suricata.eve.filter: source log missing, retrying", flush=True)
+                            break
+                        if inode_now != current_inode:
+                            print(f"suricata.eve.filter: log rotation detected old_inode={current_inode} new_inode={inode_now}", flush=True)
+                            break
+                        time.sleep(0.2)
+            except FileNotFoundError:
+                time.sleep(1)
+    volumes:
+      - suricata_logs:/var/log/suricata
 
   wazuh.indexer:
     image: wazuh/wazuh-indexer:4.14.5
@@ -75,19 +212,19 @@ services:
     ports:
       - 443:5601
     environment:
-      - INDEXER_USERNAME=admin
-      - INDEXER_PASSWORD=SecretPassword
-      - WAZUH_API_URL=https://wazuh.manager
-      - DASHBOARD_USERNAME=kibanaserver
-      - DASHBOARD_PASSWORD=kibanaserver
-      - API_USERNAME=wazuh-wui
-      - API_PASSWORD=MyS3cr37P450r.*-
+      - INDEXER_USERNAME=${INDEXER_USERNAME:-admin}
+      - INDEXER_PASSWORD=${INDEXER_PASSWORD}
+      - WAZUH_API_URL=${WAZUH_API_URL:-https://wazuh.manager}
+      - DASHBOARD_USERNAME=${DASHBOARD_USERNAME:-kibanaserver}
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-kibanaserver}
+      - API_USERNAME=${API_USERNAME:-wazuh-wui}
+      - API_PASSWORD=${API_PASSWORD}
     volumes:
       - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem
       - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem
       - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem
       - ./config/wazuh_dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml
-      - ./config/wazuh_dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml
+      - ./config/wazuh_dashboard/wazuh.local.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml
       - wazuh-dashboard-config:/usr/share/wazuh-dashboard/data/wazuh/config
       - wazuh-dashboard-custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
     depends_on:
@@ -108,6 +245,7 @@ volumes:
   wazuh_wodles:
   filebeat_etc:
   filebeat_var:
+  suricata_logs:
   wazuh-indexer-data:
   wazuh-dashboard-config:
   wazuh-dashboard-custom:
